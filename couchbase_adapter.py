@@ -23,7 +23,7 @@ change and route operations to other healthy nodes.
     │                               route elsewhere                 │
     └───────────────────────────────────────────────────────────────┘
 
-WHAT COUCHBASE WOULD ACTUALLY IMPLEMENT:
+WHAT COUCHBASE WOULD ACTUALLY IMPLEMENT (pseudocode — adapt to your node agent):
 
     import requests, time, threading
 
@@ -33,6 +33,8 @@ WHAT COUCHBASE WOULD ACTUALLY IMPLEMENT:
 
     def handle_drain(event_data, drain_timeout=5.0):
         # PRE-FREEZE: Remove node from cluster before Azure freezes the VM.
+        # NOTE: startGracefulFailover applies to DATA SERVICE nodes.
+        # For Index/Query/FTS nodes, the pattern may differ.
 
         # 1. Mark node as "draining" via Couchbase admin API.
         #    SDK smart clients discover topology change and route elsewhere.
@@ -42,11 +44,19 @@ WHAT COUCHBASE WOULD ACTUALLY IMPLEMENT:
             data={"otpNode": OTP_NODE}
         )
 
-        # 2. Wait bounded time for failover to complete
+        # 2. Wait bounded time for failover to complete.
+        #    Gate: rebalanceStatus transitions from "running" → "none"
+        #    AND the node's clusterMembership becomes "inactiveFailed".
         deadline = time.monotonic() + drain_timeout
         while time.monotonic() < deadline:
-            stats = requests.get(f"{ADMIN}/pools/default").json()
-            if stats.get("rebalanceStatus") == "none":
+            resp = requests.get(f"{ADMIN}/pools/default", auth=AUTH).json()
+            rebalance_done = resp.get("rebalanceStatus") == "none"
+            node_failed_over = any(
+                n.get("clusterMembership") == "inactiveFailed"
+                for n in resp.get("nodes", [])
+                if n.get("otpNode") == OTP_NODE
+            )
+            if rebalance_done and node_failed_over:
                 break
             time.sleep(0.5)
 
@@ -54,13 +64,37 @@ WHAT COUCHBASE WOULD ACTUALLY IMPLEMENT:
         # 4. Schedule post-freeze recovery (runs after VM resumes)
         threading.Thread(target=handle_recovery, daemon=True).start()
 
-    def handle_recovery(freeze_duration=45.0):
-        # POST-FREEZE: Rejoin the cluster after VM resumes from freeze.
+    def handle_recovery():
+        # POST-FREEZE: Rejoin the cluster after VM resumes.
+        # Gate on actual readiness rather than fixed timer.
 
-        # Wait for freeze to pass (freeze is typically ~30s, use margin)
-        time.sleep(freeze_duration)
+        # Wait until IMDS is reachable (proves VM has resumed from freeze)
+        while True:
+            try:
+                requests.get(
+                    "http://169.254.169.254/metadata/instance",
+                    headers={"Metadata": "true"}, timeout=2
+                )
+                break
+            except Exception:
+                time.sleep(1)
 
-        # 5. Set delta recovery (preserves data already on disk)
+        # Verify Couchbase service is healthy before attempting rejoin
+        for _ in range(30):
+            try:
+                resp = requests.get(f"{ADMIN}/pools/default", auth=AUTH, timeout=2)
+                if resp.status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+
+        # Verify no conflicting rebalance is already running
+        resp = requests.get(f"{ADMIN}/pools/default", auth=AUTH).json()
+        if resp.get("rebalanceStatus") != "none":
+            return  # Another operation in progress; let it finish
+
+        # 5. Delta recovery preserves data already on disk (fast rejoin)
         requests.post(
             f"{ADMIN}/controller/setRecoveryType",
             auth=AUTH,
@@ -94,6 +128,7 @@ is universal. The specific drain mechanism is application-dependent.
 import argparse
 import json
 import logging
+import os
 import random
 import threading
 import time
@@ -432,7 +467,6 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    import os
     token = args.auth_token or os.environ.get("DRAIN_AUTH_TOKEN")
 
     adapter = CouchbaseResilienceAdapter(

@@ -8,7 +8,6 @@ integration pattern for VM-based stateful services.
 Usage:
     python monitor.py --notify-url http://127.0.0.1:8099/drain --verbose
     python monitor.py --notify-file /tmp/azure-drain-trigger
-    python monitor.py --config config.yaml
 
 Microsoft docs reference:
     https://learn.microsoft.com/en-us/azure/virtual-machines/linux/scheduled-events
@@ -267,7 +266,7 @@ class ScheduledEventsMonitor:
             # Filter by event type
             if event_type not in self.config.event_types:
                 logger.debug(f"Ignoring event type: {event_type}")
-                self.ignored_events.add(event_id)
+                self._add_ignored(event_id)
                 continue
 
             # Filter by VM name (Resources list)
@@ -277,7 +276,7 @@ class ScheduledEventsMonitor:
                     logger.debug(
                         f"Ignoring event {event_id}: targets {resources}, not '{self.config.vm_name}'"
                     )
-                    self.ignored_events.add(event_id)
+                    self._add_ignored(event_id)
                     continue
 
             # Cooldown check — prevent drain storms
@@ -405,6 +404,16 @@ class ScheduledEventsMonitor:
         self.state = state
         self.metrics.set_state(state)
 
+    def _add_ignored(self, event_id: str):
+        """Add to ignored set with independent bounding."""
+        self.ignored_events.add(event_id)
+        if len(self.ignored_events) > self.MAX_SEEN_EVENTS:
+            # Discard oldest half (sets are unordered, but clearing half is fine
+            # since ignored events are permanent-skip; worst case we re-evaluate)
+            to_remove = list(self.ignored_events)[:len(self.ignored_events) // 2]
+            for eid in to_remove:
+                self.ignored_events.discard(eid)
+
     def _prune_delivered_events(self):
         """Remove old entries from delivered_events to prevent memory leak."""
         if len(self.delivered_events) <= self.MAX_SEEN_EVENTS:
@@ -414,9 +423,6 @@ class ScheduledEventsMonitor:
         cutoff = len(sorted_items) // 2
         for event_id, _ in sorted_items[:cutoff]:
             del self.delivered_events[event_id]
-        # Also prune ignored_events (less critical but keeps memory bounded)
-        if len(self.ignored_events) > self.MAX_SEEN_EVENTS:
-            self.ignored_events.clear()
 
     def _handle_shutdown(self, signum, frame):
         logger.info("Shutdown signal received. Exiting.")

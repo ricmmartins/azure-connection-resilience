@@ -62,7 +62,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/bin/python3 ${INSTALL_DIR}/monitor.py \\
     --notify-url http://localhost:8099/drain \\
-    --poll-interval 5 \\
+    --poll-interval 1 \\
     --metrics-port 9090 \\
     --verbose
 Restart=always

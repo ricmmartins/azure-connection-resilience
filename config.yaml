@@ -1,7 +1,9 @@
-# Azure Connection Resilience Monitor — Configuration
+# Azure Connection Resilience Monitor — Configuration Reference
 #
-# Copy this file to config.yaml and adjust for your environment.
-# The monitor reads this on startup if --config is specified.
+# This file documents the available configuration options.
+# Currently, the monitor uses CLI arguments (see monitor.py --help).
+# Use this as a reference for values when configuring the systemd service
+# or Docker entrypoint.
 
 # IMDS polling
 imds:

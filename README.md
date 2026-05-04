@@ -17,7 +17,7 @@ This pattern provides **zero-second recovery** for planned maintenance and **~30
 
 | Scenario | Mechanism | Recovery Time | Coverage |
 |----------|-----------|---------------|----------|
-| Planned live migration (Freeze) | Proactive drain via Scheduled Events | **0 seconds** | ~95% of cases |
+| Planned live migration (Freeze) | Proactive drain via Scheduled Events | **0 seconds** | Majority of cases |
 | Predictive hardware failure | Scheduled migration (days notice) | **0 seconds** | Covered |
 | Sudden hardware failure | TCP keepalive + TCP_USER_TIMEOUT | **~30 seconds** | Fallback |
 
@@ -226,7 +226,7 @@ For Couchbase's architecture (Private Link → ILB → VMSS, 1 node per VM, memc
 10. Adapter triggers rebalance to bring node back into the cluster
 11. Node rejoins, SDK clients resume routing operations here
 
-**What Couchbase's node agent would implement:**
+**What Couchbase's node agent would implement** (pseudocode, adapt to your agent framework):
 
 ```python
 import requests
@@ -238,7 +238,9 @@ AUTH = ("admin", "password")
 OTP_NODE = "ns_1@127.0.0.1"
 
 def handle_drain(event_data, drain_timeout=5.0):
-    """PRE-FREEZE: Called when monitor detects a Freeze event on this VM."""
+    """PRE-FREEZE: Called when monitor detects a Freeze event on this VM.
+    NOTE: startGracefulFailover applies to Data Service nodes.
+    """
 
     # Step 1: Tell Couchbase Server this node is going away.
     # SDK clients will discover topology change and route elsewhere.
@@ -248,11 +250,18 @@ def handle_drain(event_data, drain_timeout=5.0):
         data={"otpNode": OTP_NODE}
     )
 
-    # Step 2: Wait (bounded) for in-flight ops to drain.
+    # Step 2: Wait (bounded) for failover to actually complete.
+    # Gate: rebalanceStatus == "none" AND node is "inactiveFailed"
     deadline = time.monotonic() + drain_timeout
     while time.monotonic() < deadline:
-        resp = requests.get(f"{COUCHBASE_ADMIN}/pools/default").json()
-        if resp.get("rebalanceStatus") == "none":
+        resp = requests.get(f"{COUCHBASE_ADMIN}/pools/default", auth=AUTH).json()
+        rebalance_done = resp.get("rebalanceStatus") == "none"
+        node_failed_over = any(
+            n.get("clusterMembership") == "inactiveFailed"
+            for n in resp.get("nodes", [])
+            if n.get("otpNode") == OTP_NODE
+        )
+        if rebalance_done and node_failed_over:
             break
         time.sleep(0.5)
 
@@ -260,11 +269,34 @@ def handle_drain(event_data, drain_timeout=5.0):
     # Step 4: Schedule post-freeze recovery.
     threading.Thread(target=handle_recovery, daemon=True).start()
 
-def handle_recovery(freeze_duration=45.0):
-    """POST-FREEZE: Rejoin the cluster after VM resumes."""
+def handle_recovery():
+    """POST-FREEZE: Rejoin the cluster after VM resumes.
+    Gates on actual VM/service readiness, not a fixed timer.
+    """
 
-    # Wait for freeze to pass (~30s typical, use margin)
-    time.sleep(freeze_duration)
+    # Wait until IMDS is reachable (proves VM has resumed from freeze)
+    while True:
+        try:
+            requests.get("http://169.254.169.254/metadata/instance",
+                         headers={"Metadata": "true"}, timeout=2)
+            break
+        except Exception:
+            time.sleep(1)
+
+    # Verify Couchbase service is healthy
+    for _ in range(30):
+        try:
+            if requests.get(f"{COUCHBASE_ADMIN}/pools/default",
+                           auth=AUTH, timeout=2).status_code == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+
+    # Verify no conflicting rebalance is running
+    resp = requests.get(f"{COUCHBASE_ADMIN}/pools/default", auth=AUTH).json()
+    if resp.get("rebalanceStatus") != "none":
+        return  # Another operation in progress
 
     # Step 5: Delta recovery preserves data already on disk (fast rejoin)
     requests.post(
@@ -285,6 +317,7 @@ def handle_recovery(freeze_duration=45.0):
 
 **Key points for Couchbase engineering:**
 - This is SERVER-SIDE, not client-side. No customer code changes needed.
+- `startGracefulFailover` applies to **Data Service nodes**. For Index/Query/FTS-only nodes, the drain mechanism may differ (though those services are typically stateless from the connection perspective).
 - Memcached binary protocol is irrelevant here: drain happens via Couchbase's REST admin API (port 8091), not at the memcached layer.
 - Smart client SDK handles topology discovery automatically. `startGracefulFailover` updates the cluster map, SDK reroutes.
 - Delta recovery preserves data on disk. Node rejoins in seconds, not minutes.
@@ -300,12 +333,12 @@ def handle_recovery(freeze_duration=45.0):
 | `monitor.py` | Core daemon: IMDS polling (1/sec), event filtering, drain notification, Prometheus metrics |
 | `couchbase_adapter.py` | Reference integration: drain listener, bounded state machine, reconnect with backoff |
 | `tcp_tuning.sh` | Check/apply/persist/revert TCP kernel settings (fallback layer) |
-| `config.yaml` | Configuration template with security and tuning options |
+| `config.yaml` | Configuration reference with security and tuning options |
 | `Dockerfile` | Container packaging (for containerized workloads) |
 | `install.sh` | systemd service installation (for VM workloads) |
 | `demo/mock_imds.py` | Fake IMDS for local testing |
 | `demo/mock_app.py` | Fake app with drain endpoint |
-| `demo/run_demo.sh` | End-to-end demo showing before/after |
+| `demo/run_demo.sh` | Narrated simulation showing the event detection flow |
 
 ## Non-Goals
 
@@ -320,7 +353,7 @@ This pattern does **not**:
 
 | Limitation | Impact | Mitigation |
 |-----------|--------|------------|
-| **Only covers planned maintenance** | Unplanned hardware failures give zero IMDS notice (~5% of stalls). | TCP_USER_TIMEOUT (20s) is the fallback for those. Combined coverage: ~95% planned + faster detection for the rest. |
+| **Only covers planned maintenance** | Unplanned hardware failures give zero IMDS notice. | TCP_USER_TIMEOUT (20s) is the fallback for those. Combined: proactive drain for planned + faster detection for unplanned. |
 | **Cluster runs at N-1 during drain/rejoin** | Reduced capacity while node is out. If multiple VMs freeze simultaneously, capacity drops further. | Freeze events are typically staggered by Azure. Monitor for cluster-level capacity alerts. |
 | **Post-freeze rejoin is not instant** | Delta recovery + rebalance takes seconds to minutes depending on mutation volume during the freeze window. | Keep freeze window short (~30s typical). Delta recovery is fast when mutation load is low. |
 | **False positives from cancelled events** | Azure can schedule then cancel an event. Node would be failed over unnecessarily. | Cost is one drain/rejoin cycle. Low frequency in practice. Monitor event cancellation rate. |
@@ -332,7 +365,7 @@ This pattern does **not**:
 ## FAQ
 
 **Q: Does this eliminate the 15-minute stalls completely?**
-A: For planned live migrations (which cause ~95% of the stalls): yes, 0 seconds. For sudden hardware failures: reduces to ~30s via TCP tuning. Together, this provides near-complete coverage.
+A: For planned live migrations (which cause the majority of the stalls): yes, 0 seconds. For sudden hardware failures: reduces to ~30s via TCP tuning. Together, this provides near-complete coverage.
 
 **Q: Why not just set TCP_USER_TIMEOUT to 1 second?**
 A: Because transient network blips or brief Azure fabric operations would falsely kill healthy connections. 20s is the sweet spot between fast detection and false positive avoidance. And for planned maintenance, you don't need TCP_USER_TIMEOUT at all because you drain proactively.
@@ -347,7 +380,7 @@ A: Health probes detect backend failures, but existing connections are NOT reset
 A: The SDK's smart client handles topology changes (node added/removed from cluster map). But a black-holed TCP socket doesn't trigger a topology change. The socket just silently stops working. The SDK can't fail over what it doesn't know is dead. This pattern tells the SDK "drain NOW" 15 minutes before the failure would occur.
 
 **Q: What's the overhead?**
-A: One HTTP GET to IMDS every second. IMDS is a VM-local metadata service (169.254.169.254), so there's no network hop. CPU: negligible. Memory: ~15MB RSS.
+A: One HTTP GET to IMDS every second. IMDS is a VM-local metadata service (169.254.169.254), so there's no network hop. CPU: negligible. Memory: minimal (single-threaded Python daemon).
 
 ## Official References
 
