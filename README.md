@@ -334,7 +334,7 @@ def handle_recovery(event_id):
 - Smart client SDK handles topology discovery automatically. `startGracefulFailover` updates the cluster map, SDK reroutes.
 - Delta recovery preserves data on disk. Node rejoins in seconds, not minutes.
 - Each VMSS instance runs its own monitor. No coordination needed between nodes.
-- The 15-minute window from Scheduled Events gives plenty of time for graceful failover + recovery scheduling.
+- **Timing optimization:** The monitor triggers drain immediately on event detection, but `NotBefore` is 15 min away. This means the cluster runs at N-1 for the full 15-min window. For production, consider delaying the failover until closer to `NotBefore` (e.g., 60s before) to minimize the N-1 window. The pseudocode above shows immediate drain for simplicity.
 - TCP_USER_TIMEOUT (20s, already in your SDK) remains the fallback for unplanned failures where no Scheduled Event fires.
 - Works with your existing custom node agents (metrics, health, orchestration). The adapter is ~50 LOC of integration logic.
 
