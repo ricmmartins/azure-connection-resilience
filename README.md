@@ -329,6 +329,7 @@ def handle_recovery(event_id):
 
 **Key points for Couchbase engineering:**
 - This is SERVER-SIDE, not client-side. No customer code changes needed.
+- **No architectural changes required.** Private Link + Internal LB stays in place. The drain happens at the Couchbase cluster layer (above the LB), so the LB's behavior during live migration becomes irrelevant. You don't need to switch to VNet peering to avoid the black hole.
 - `startGracefulFailover` applies to **Data Service nodes**. For Index/Query/FTS-only nodes, the drain mechanism may differ (though those services are typically stateless from the connection perspective).
 - Memcached binary protocol is irrelevant here: drain happens via Couchbase's REST admin API (port 8091), not at the memcached layer.
 - Smart client SDK handles topology discovery automatically. `startGracefulFailover` updates the cluster map, SDK reroutes.
