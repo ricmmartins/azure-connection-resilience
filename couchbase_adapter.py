@@ -61,25 +61,36 @@ WHAT COUCHBASE WOULD ACTUALLY IMPLEMENT (pseudocode — adapt to your node agent
             time.sleep(0.5)
 
         # 3. Node is quiesced. Freeze can proceed safely.
-        # 4. Schedule post-freeze recovery (runs after VM resumes)
-        threading.Thread(target=handle_recovery, daemon=True).start()
+        # 4. Schedule post-freeze recovery.
+        #    CRITICAL: Pass EventId so recovery waits for freeze to COMPLETE.
+        #    The freeze hasn't happened yet! 15-min window is advance notice.
+        event_id = event_data.get("EventId")
+        threading.Thread(target=handle_recovery, args=(event_id,), daemon=True).start()
 
-    def handle_recovery():
-        # POST-FREEZE: Rejoin the cluster after VM resumes.
-        # Gate on actual readiness rather than fixed timer.
+    def handle_recovery(event_id):
+        # POST-FREEZE: Rejoin the cluster AFTER the freeze event completes.
+        #
+        # IMPORTANT: When this thread starts, the freeze has NOT happened yet.
+        # We must wait for the event to finish (removed from IMDS events array)
+        # before attempting to rejoin.
 
-        # Wait until IMDS is reachable (proves VM has resumed from freeze)
+        IMDS_SE = "http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01"
+
+        # Wait for event to complete (disappear from IMDS array).
+        # During the actual freeze (~5s), IMDS will be unreachable; that's OK.
         while True:
             try:
-                requests.get(
-                    "http://169.254.169.254/metadata/instance",
-                    headers={"Metadata": "true"}, timeout=2
-                )
-                break
+                resp = requests.get(
+                    IMDS_SE, headers={"Metadata": "true"}, timeout=5
+                ).json()
+                active_ids = [e.get("EventId") for e in resp.get("Events", [])]
+                if event_id not in active_ids:
+                    break  # Event finished and was removed
             except Exception:
-                time.sleep(1)
+                pass  # IMDS unreachable during freeze; keep retrying
+            time.sleep(2)
 
-        # Verify Couchbase service is healthy before attempting rejoin
+        # Verify Couchbase service is healthy after freeze
         for _ in range(30):
             try:
                 resp = requests.get(f"{ADMIN}/pools/default", auth=AUTH, timeout=2)
@@ -111,8 +122,8 @@ WHAT COUCHBASE WOULD ACTUALLY IMPLEMENT (pseudocode — adapt to your node agent
         )
 
     # Full lifecycle:
-    #   IMDS event → handle_drain() → freeze → VM resumes → handle_recovery()
-    #   Total: node exits cluster, freeze passes, node rejoins with delta recovery
+    #   IMDS event → handle_drain() → [15 min passes] → freeze (~5s) →
+    #   event removed from IMDS → handle_recovery() proceeds → node rejoins
 
 This file is a GENERIC REFERENCE showing the state machine pattern.
 For Couchbase specifically, replace the _disconnect/_connect methods

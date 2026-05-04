@@ -267,23 +267,35 @@ def handle_drain(event_data, drain_timeout=5.0):
 
     # Step 3: Node is quiesced. Freeze can proceed safely.
     # Step 4: Schedule post-freeze recovery.
-    threading.Thread(target=handle_recovery, daemon=True).start()
+    # Pass the EventId so recovery knows what to wait for.
+    event_id = event_data.get("EventId")
+    threading.Thread(target=handle_recovery, args=(event_id,), daemon=True).start()
 
-def handle_recovery():
-    """POST-FREEZE: Rejoin the cluster after VM resumes.
-    Gates on actual VM/service readiness, not a fixed timer.
+def handle_recovery(event_id):
+    """POST-FREEZE: Rejoin the cluster after the freeze event completes.
+
+    CRITICAL: The freeze hasn't happened yet when this thread starts!
+    The 15-min window is advance NOTICE. We must wait for the event to
+    actually complete (disappear from IMDS) before rejoining.
     """
 
-    # Wait until IMDS is reachable (proves VM has resumed from freeze)
+    # Wait for the freeze event to COMPLETE.
+    # When an event finishes, it's removed from the IMDS events array.
+    # Poll until our EventId is no longer present.
+    IMDS_URL = "http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01"
     while True:
         try:
-            requests.get("http://169.254.169.254/metadata/instance",
-                         headers={"Metadata": "true"}, timeout=2)
-            break
+            resp = requests.get(
+                IMDS_URL, headers={"Metadata": "true"}, timeout=5
+            ).json()
+            event_ids = [e.get("EventId") for e in resp.get("Events", [])]
+            if event_id not in event_ids:
+                break  # Event completed and was removed
         except Exception:
-            time.sleep(1)
+            pass  # IMDS unreachable during freeze itself; keep trying
+        time.sleep(2)
 
-    # Verify Couchbase service is healthy
+    # Verify Couchbase service is healthy after freeze
     for _ in range(30):
         try:
             if requests.get(f"{COUCHBASE_ADMIN}/pools/default",
