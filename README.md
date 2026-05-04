@@ -1,7 +1,7 @@
 # Azure TCP Connection Resilience Pattern
 
 > **⚠️ This is a proof-of-concept / reference implementation.**
-> It demonstrates a node-agent integration pattern for proactive connection draining during Azure planned maintenance. It does NOT replace the platform-level fix being worked by the Azure Load Balancer product group. Validate thoroughly in non-production environments before any production consideration. Provided as-is, no warranties or support guarantees.
+> It demonstrates a node-agent integration pattern for proactive connection draining during Azure planned maintenance. It does NOT replace a platform-level fix (there is currently no roadmap ETA from the Azure Load Balancer product group). Validate thoroughly in non-production environments before any production consideration. Provided as-is, no warranties or support guarantees.
 
 ## The Problem
 
@@ -9,7 +9,7 @@ When Azure performs **live migrations** (Freeze events) on VM hosts behind a Sta
 
 With default Linux TCP settings (`tcp_retries2=15`), the kernel retransmits with exponential backoff for **up to 15 minutes** before declaring the connection failed.
 
-**Competitive context:** AWS NLB sends TCP RST for active connections during live migration by default. Azure Standard LB does not. This is a known platform gap being addressed by the Azure LB product group.
+**Competitive context:** AWS NLB sends TCP RST for active connections during live migration by default. Azure Standard LB does not. This is a known platform gap acknowledged by the Azure LB product group (no roadmap ETA for a fix).
 
 ## The Solution: Two Layers
 
@@ -405,7 +405,7 @@ A: One HTTP GET to IMDS every second. IMDS is a VM-local metadata service (169.2
 
 ## Status
 
-🟡 **Proof of Concept** — Reference implementation demonstrating the integration pattern. Tested in lab with mock IMDS. Not yet validated under real Azure live migration with packet captures. The Azure LB product group is working on a platform-level fix for the TCP RST gap. This pattern is a bridge for operators who need 0-second impact today.
+🟡 **Proof of Concept** — Reference implementation demonstrating the integration pattern. Tested in lab with mock IMDS. Not yet validated under real Azure live migration with packet captures. The Azure LB product group has acknowledged the TCP RST gap but there is no roadmap ETA for a platform-level fix. This pattern is a bridge for operators who need 0-second impact today.
 
 ## Contributing
 
