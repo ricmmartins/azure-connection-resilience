@@ -1,0 +1,81 @@
+# Azure Connection Resilience Monitor — Configuration
+#
+# Copy this file to config.yaml and adjust for your environment.
+# The monitor reads this on startup if --config is specified.
+
+# IMDS polling
+imds:
+  # Poll interval in seconds. Microsoft recommends polling once per second.
+  # Azure rate-limits IMDS generously (no published cap for Scheduled Events).
+  # 1s ensures you get the full 15-minute advance notice window.
+  poll_interval: 1
+
+  # Filter events to only those affecting this VM (optional).
+  # If set, only events with this VM name in the Resources array trigger drains.
+  # vm_name: my-vm-name
+
+  # IMDS endpoint (override for testing with mock_imds.py)
+  # url: http://localhost:8169
+
+# Authentication for drain endpoint
+# If set, the monitor sends this as "Authorization: Bearer <token>" to the drain endpoint.
+# The adapter validates it. Without this, anyone on the host can trigger drains.
+# auth_token: ${DRAIN_AUTH_TOKEN}
+
+# Notification method — pick ONE
+notification:
+  # HTTP webhook (recommended for most apps)
+  http:
+    url: http://127.0.0.1:8099/drain
+    method: POST
+    timeout: 5
+    headers:
+      Authorization: "Bearer ${DRAIN_AUTH_TOKEN}"
+
+  # File-based (simplest, good for sidecar containers)
+  # file:
+  #   path: /tmp/azure-drain-trigger
+
+  # Unix signal (for apps that handle SIGUSR1/SIGUSR2)
+  # signal:
+  #   pid_file: /var/run/myapp.pid
+  #   signal: SIGUSR1
+
+# Prometheus metrics
+metrics:
+  enabled: true
+  port: 9090
+  # SECURITY: bind to loopback only (default). Set to 0.0.0.0 only
+  # if you need external scraping (e.g., from a Prometheus pod).
+  bind: "127.0.0.1"
+
+# Event types to react to
+# Freeze = live migration (most common cause of TCP black holes)
+# Reboot/Redeploy = also relevant but usually have longer notice
+event_types:
+  - Freeze
+  - Reboot
+  - Redeploy
+
+# Cooldown between drain notifications (seconds).
+# Prevents drain storms if multiple events arrive in quick succession.
+cooldown: 60
+
+# Logging
+logging:
+  level: INFO  # DEBUG for troubleshooting
+  # file: /var/log/azure-resilience.log
+
+# TCP tuning recommendations (informational, applied by tcp_tuning.sh)
+# These are the KERNEL-LEVEL settings for idle socket detection.
+tcp_tuning:
+  # Detect dead IDLE connections in 60s instead of 15min
+  # NOTE: Only helps sockets with SO_KEEPALIVE enabled
+  keepalive_time: 30     # seconds idle before first probe
+  keepalive_intvl: 10    # seconds between probes
+  keepalive_probes: 3    # probes before declaring dead
+  # Total idle detection: 30 + 10*3 = 60s
+
+  # Per-socket timeout for ACTIVE connections (must be set by application)
+  # This is the PRIMARY defense against TCP black holes
+  user_timeout: 20       # seconds — prevents the 15-minute stall
