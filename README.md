@@ -220,7 +220,7 @@ For Couchbase's architecture (Private Link → ILB → VMSS, 1 node per VM, memc
 4. SDK smart clients discover topology change, route operations to other nodes
 5. In-flight operations complete (bounded 5s timeout)
 6. Node is quiesced with zero active connections
-7. Azure Freeze happens with zero customer impact (~30s)
+7. Azure Freeze happens with zero customer impact (typically ≤5s per Microsoft docs)
 8. VM resumes, Couchbase process is still running
 9. Adapter calls `setRecoveryType(delta)` to preserve on-disk data
 10. Adapter triggers rebalance to bring node back into the cluster
@@ -355,9 +355,9 @@ This pattern does **not**:
 |-----------|--------|------------|
 | **Only covers planned maintenance** | Unplanned hardware failures give zero IMDS notice. | TCP_USER_TIMEOUT (20s) is the fallback for those. Combined: proactive drain for planned + faster detection for unplanned. |
 | **Cluster runs at N-1 during drain/rejoin** | Reduced capacity while node is out. If multiple VMs freeze simultaneously, capacity drops further. | Freeze events are typically staggered by Azure. Monitor for cluster-level capacity alerts. |
-| **Post-freeze rejoin is not instant** | Delta recovery + rebalance takes seconds to minutes depending on mutation volume during the freeze window. | Keep freeze window short (~30s typical). Delta recovery is fast when mutation load is low. |
+| **Post-freeze rejoin is not instant** | Delta recovery + rebalance takes seconds to minutes depending on mutation volume during the freeze window. | Freeze is typically ≤5s (per Microsoft docs). Delta recovery is fast when mutation load is low. |
 | **False positives from cancelled events** | Azure can schedule then cancel an event. Node would be failed over unnecessarily. | Cost is one drain/rejoin cycle. Low frequency in practice. Monitor event cancellation rate. |
-| **Freeze duration is non-deterministic** | ~30s is typical but not guaranteed. Fixed-timer recovery could fire too early. | Detect VM resume (IMDS availability returning) rather than hard-coded sleep. |
+| **Freeze duration is non-deterministic** | Typically ≤5s but not guaranteed. Recovery that fires before freeze ends could conflict. | Detect VM resume (IMDS availability returning) rather than hard-coded sleep. |
 | **Requires engineering integration** | ~50 LOC in the node agent, plus testing and rollout. Not zero-effort. | Integration is straightforward for teams with existing node agents. |
 | **No cross-node coordination** | Each node independently fails over. Rack-level maintenance could cascade multiple failovers. | Azure typically staggers maintenance across fault domains. Add cluster-level gate if needed. |
 | **Workaround, not a root-cause fix** | The Azure Load Balancer TCP RST gap still exists. No platform-level roadmap ETA for a fix. | This buys time until the platform fix ships. When it does, this becomes optional hardening. |
