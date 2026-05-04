@@ -316,6 +316,19 @@ This pattern does **not**:
 - Auto-approve Scheduled Events (approval is out of scope; drain only)
 - Work as a general-purpose service mesh or load balancer replacement
 
+## Limitations and Drawbacks
+
+| Limitation | Impact | Mitigation |
+|-----------|--------|------------|
+| **Only covers planned maintenance** | Unplanned hardware failures give zero IMDS notice (~5% of stalls). | TCP_USER_TIMEOUT (20s) is the fallback for those. Combined coverage: ~95% planned + faster detection for the rest. |
+| **Cluster runs at N-1 during drain/rejoin** | Reduced capacity while node is out. If multiple VMs freeze simultaneously, capacity drops further. | Freeze events are typically staggered by Azure. Monitor for cluster-level capacity alerts. |
+| **Post-freeze rejoin is not instant** | Delta recovery + rebalance takes seconds to minutes depending on mutation volume during the freeze window. | Keep freeze window short (~30s typical). Delta recovery is fast when mutation load is low. |
+| **False positives from cancelled events** | Azure can schedule then cancel an event. Node would be failed over unnecessarily. | Cost is one drain/rejoin cycle. Low frequency in practice. Monitor event cancellation rate. |
+| **Freeze duration is non-deterministic** | ~30s is typical but not guaranteed. Fixed-timer recovery could fire too early. | Detect VM resume (IMDS availability returning) rather than hard-coded sleep. |
+| **Requires engineering integration** | ~50 LOC in the node agent, plus testing and rollout. Not zero-effort. | Integration is straightforward for teams with existing node agents. |
+| **No cross-node coordination** | Each node independently fails over. Rack-level maintenance could cascade multiple failovers. | Azure typically staggers maintenance across fault domains. Add cluster-level gate if needed. |
+| **Workaround, not a root-cause fix** | The Azure Load Balancer TCP RST gap still exists. No platform-level roadmap ETA for a fix. | This buys time until the platform fix ships. When it does, this becomes optional hardening. |
+
 ## FAQ
 
 **Q: Does this eliminate the 15-minute stalls completely?**
