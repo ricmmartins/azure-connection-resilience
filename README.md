@@ -60,12 +60,12 @@ This is designed as a **node-agent integration pattern**, not a standalone appli
 
 | Event Type | Advance Notice | This Pattern Helps? | Notes |
 |------------|---------------|--------------------:|-------|
-| `Freeze` (live migration) | 15 min minimum | ✅ **Yes — 0s impact** | Primary use case |
-| `Reboot` (planned) | 15 min minimum | ✅ Yes | Drain before reboot |
-| `Redeploy` (planned) | 10 min minimum | ✅ Yes | Drain before move |
-| `Preempt` (Spot VM) | 30 seconds | ⚠️ Partial | Very tight window |
-| Hardware failure (sudden) | None (`Started` immediately) | ❌ No proactive drain | TCP_USER_TIMEOUT fallback only |
-| Service heal (post-failure) | None | ❌ No proactive drain | TCP_USER_TIMEOUT fallback only |
+| `Freeze` (live migration) | 15 min minimum | **Yes — 0s impact** | Primary use case |
+| `Reboot` (planned) | 15 min minimum | Yes | Drain before reboot |
+| `Redeploy` (planned) | 10 min minimum | Yes | Drain before move |
+| `Preempt` (Spot VM) | 30 seconds | Partial | Very tight window |
+| Hardware failure (sudden) | None (`Started` immediately) | No proactive drain | TCP_USER_TIMEOUT fallback only |
+| Service heal (post-failure) | None | No proactive drain | TCP_USER_TIMEOUT fallback only |
 
 > **Key insight:** The 15-minute stalls Staples experiences are from planned live migrations. These ARE covered by Scheduled Events with 15 min notice. The proactive drain eliminates this entirely.
 
